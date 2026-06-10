@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "Node",
+    "strict": true,
+    "esModuleInterop": true,
+    "sourceMap": true,
+    "ignoreDeprecations": "6.0",
+    "baseUrl": ".",
+    "paths": {
+      "obsidian": ["./node_modules/obsidian"]
+    },
+    "lib": ["ES2020", "DOM"],
+    "declaration": false,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

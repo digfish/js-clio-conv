@@ -1,0 +1,27 @@
+{
+  "name": "obsidian-clio-conv",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "Scaffold de plugin para Obsidian.",
+  "main": "main.js",
+  "author": "",
+  "license": "MIT",
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w"
+  },
+  "dependencies": {
+    "abcjs": "^6.1.0",
+    "html2canvas": "^1.4.1"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^24.0.0",
+    "@rollup/plugin-node-resolve": "^15.0.0",
+    "@rollup/plugin-typescript": "^10.0.0",
+    "@types/node": "^20.11.0",
+    "obsidian": "^1.4.0",
+    "rollup": "^3.0.0",
+    "tslib": "^2.6.0",
+    "typescript": "^5.5.0"
+  }
+}
