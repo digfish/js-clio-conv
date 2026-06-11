@@ -1,5 +1,6 @@
 import { App, Notice, Plugin, Modal, MarkdownView, normalizePath } from 'obsidian';
 import abcjs from 'abcjs';
+import { convertDiatonicTabToABC, convertChromaticTabToABC } from './conversion';
 
 const HARMONICA_MIDI_PROGRAM = 22;
 const SOUND_OUTPUT_FOLDER = 'harmonica/sounds';
@@ -156,49 +157,6 @@ function convertChromaticTabToDiatonic(input: string): { text: string; converted
   return { text, converted, unknown };
 }
 
-function convertDiatonicTabToABC(input: string): { text: string; converted: number; unknown: number } {
-  let converted = 0;
-  let unknown = 0;
-  const tokenPattern = /(^|[\s([{;:,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};:,.!?])/g;
-
-  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined) => {
-    const normalizedSign = sign === '-' ? '-' : '+';
-    const token = `${normalizedSign}${hole}`;
-    const abcNote = DIATONIC_TO_ABC[token];
-
-    if (!abcNote) {
-      unknown += 1;
-      return match;
-    }
-
-    converted += 1;
-    return `${prefix}${abcNote}${duration || ''}`;
-  });
-
-  return { text, converted, unknown };
-}
-
-function convertChromaticTabToABC(input: string): { text: string; converted: number; unknown: number } {
-  let converted = 0;
-  let unknown = 0;
-  const tokenPattern = /(^|[\s([{;:,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};:,.!?])/g;
-
-  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined) => {
-    const normalizedSign = sign === '-' ? '-' : '+';
-    const token = `${normalizedSign}${hole}`;
-    const abcNote = CHROMATIC_TO_ABC[token];
-
-    if (!abcNote) {
-      unknown += 1;
-      return match;
-    }
-
-    converted += 1;
-    return `${prefix}${abcNote}${duration || ''}`;
-  });
-
-  return { text, converted, unknown };
-}
 
 function renderABCtoSVG(abcNotation: string): string {
   const container = document.createElement('div');
