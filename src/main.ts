@@ -1,6 +1,14 @@
 import { App, Notice, Plugin, Modal, MarkdownView, PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import abcjs from 'abcjs';
+import lamejs from 'lamejs';
+import BitStream from 'lamejs/src/js/BitStream.js';
+import Lame from 'lamejs/src/js/Lame.js';
+import MPEGMode from 'lamejs/src/js/MPEGMode.js';
 import { convertDiatonicTabToABC, convertChromaticTabToABC, convertABCToChromaticTab } from './conversion';
+
+(globalThis as any).BitStream = BitStream;
+(globalThis as any).Lame = Lame;
+(globalThis as any).MPEGMode = MPEGMode;
 
 const HARMONICA_MIDI_PROGRAM = 22;
 const DEFAULT_SOUND_OUTPUT_FOLDER = 'harmonica/sounds';
@@ -452,17 +460,25 @@ function getMidiData(abcNotation: string, midiProgram: number): ArrayBuffer {
   return new Uint8Array(midiData).buffer;
 }
 
-async function getWavData(visualObj: any): Promise<ArrayBuffer> {
+async function getAudioBuffer(visualObj: any): Promise<AudioBuffer> {
   const synth = new (abcjs as any).synth.CreateSynth();
   await synth.init({ visualObj });
   await synth.prime();
 
   const audioBuffer = synth.getAudioBuffer();
   if (!audioBuffer) {
-    throw new Error('Failed to generate WAV data');
+    throw new Error('Failed to generate audio data');
   }
 
-  return audioBufferToWav(audioBuffer);
+  return audioBuffer;
+}
+
+async function getWavData(visualObj: any): Promise<ArrayBuffer> {
+  return audioBufferToWav(await getAudioBuffer(visualObj));
+}
+
+async function getMp3Data(visualObj: any): Promise<ArrayBuffer> {
+  return audioBufferToMp3(await getAudioBuffer(visualObj));
 }
 
 function audioBufferToWav(audioBuffer: AudioBuffer): ArrayBuffer {
@@ -519,6 +535,57 @@ function audioBufferToWav(audioBuffer: AudioBuffer): ArrayBuffer {
   return buffer;
 }
 
+function audioBufferToMp3(audioBuffer: AudioBuffer, bitRate = 128): ArrayBuffer {
+  const channelCount = Math.min(audioBuffer.numberOfChannels, 2);
+  const sampleRate = audioBuffer.sampleRate;
+  const mp3Encoder = new lamejs.Mp3Encoder(channelCount, sampleRate, bitRate);
+  const samples = Array.from({ length: channelCount }, (_, channel) => audioBufferChannelToInt16(audioBuffer.getChannelData(channel)));
+  const blockSize = 1152;
+  const mp3Chunks: Uint8Array[] = [];
+
+  for (let offset = 0; offset < audioBuffer.length; offset += blockSize) {
+    const left = samples[0].subarray(offset, offset + blockSize);
+    const chunk = channelCount === 2
+      ? mp3Encoder.encodeBuffer(left, samples[1].subarray(offset, offset + blockSize))
+      : mp3Encoder.encodeBuffer(left);
+
+    if (chunk.length > 0) {
+      mp3Chunks.push(chunk);
+    }
+  }
+
+  const finalChunk = mp3Encoder.flush();
+  if (finalChunk.length > 0) {
+    mp3Chunks.push(finalChunk);
+  }
+
+  const byteLength = mp3Chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const mp3Data = new Uint8Array(byteLength);
+  let offset = 0;
+
+  for (const chunk of mp3Chunks) {
+    mp3Data.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  if (mp3Data.length === 0) {
+    throw new Error('Failed to generate MP3 data');
+  }
+
+  return mp3Data.buffer;
+}
+
+function audioBufferChannelToInt16(channelData: Float32Array): Int16Array {
+  const samples = new Int16Array(channelData.length);
+
+  for (let index = 0; index < channelData.length; index += 1) {
+    const sample = Math.max(-1, Math.min(1, channelData[index]));
+    samples[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+  }
+
+  return samples;
+}
+
 function sanitizeFilename(filename: string): string {
   return filename
     .trim()
@@ -555,18 +622,67 @@ async function getAvailableVaultPath(app: App, folderPath: string, filename: str
   return path;
 }
 
+function selectCurrentMusicCodeBlock(editor: any): boolean {
+  const cursor = editor.getCursor();
+  const opening = findOpeningMusicFence(editor, cursor.line);
+
+  if (!opening || cursor.line <= opening.line) {
+    return false;
+  }
+
+  const closingLine = findClosingFence(editor, opening.line + 1, opening.marker, opening.markerLength);
+
+  if (closingLine === null || cursor.line >= closingLine) {
+    return false;
+  }
+
+  editor.setSelection(
+    { line: opening.line + 1, ch: 0 },
+    { line: closingLine, ch: 0 }
+  );
+  return true;
+}
+
+function findOpeningMusicFence(editor: any, fromLine: number): { line: number; marker: string; markerLength: number } | null {
+  for (let line = fromLine; line >= 0; line -= 1) {
+    const match = /^(\s*)(`{3,})\s*([^\s`]*)?.*$/.exec(editor.getLine(line) || '');
+
+    if (!match) {
+      continue;
+    }
+
+    const language = (match[3] || '').toLowerCase();
+    if (language === 'abc' || language === 'harptab' || language === 'diatonic' || language === 'chromatic') {
+      return { line, marker: match[2][0], markerLength: match[2].length };
+    }
+  }
+
+  return null;
+}
+
+function findClosingFence(editor: any, fromLine: number, marker: string, markerLength: number): number | null {
+  for (let line = fromLine; line < editor.lineCount(); line += 1) {
+    const trimmedLine = (editor.getLine(line) || '').trim();
+    if (trimmedLine.length >= markerLength && Array.from(trimmedLine).every((char) => char === marker)) {
+      return line;
+    }
+  }
+
+  return null;
+}
+
 class ABCViewerModal extends Modal {
   abcNotation: string;
   soundOutputFolder: string;
   midiProgram: number;
-  onWavSaved?: (path: string) => void | Promise<void>;
+  onSoundSaved?: (path: string) => void | Promise<void>;
 
-  constructor(app: App, abcNotation: string, soundOutputFolder: string, midiProgram: number, onWavSaved?: (path: string) => void | Promise<void>) {
+  constructor(app: App, abcNotation: string, soundOutputFolder: string, midiProgram: number, onSoundSaved?: (path: string) => void | Promise<void>) {
     super(app);
     this.abcNotation = abcNotation;
     this.soundOutputFolder = soundOutputFolder;
     this.midiProgram = midiProgram;
-    this.onWavSaved = onWavSaved;
+    this.onSoundSaved = onSoundSaved;
   }
 
   onOpen() {
@@ -595,6 +711,7 @@ class ABCViewerModal extends Modal {
       const exportPngBtn = btnRow.createEl('button', { text: 'Download PNG' }) as HTMLButtonElement;
       const saveMidiBtn = btnRow.createEl('button', { text: 'Save MIDI' }) as HTMLButtonElement;
       const saveWavBtn = btnRow.createEl('button', { text: 'Save WAV' }) as HTMLButtonElement;
+      const saveMp3Btn = btnRow.createEl('button', { text: 'Save MP3' }) as HTMLButtonElement;
       const closeBtn = btnRow.createEl('button', { text: 'Close' }) as HTMLButtonElement;
 
       exportSvgBtn.onclick = () => {
@@ -676,7 +793,7 @@ class ABCViewerModal extends Modal {
           const title = extractTitleFromAbc(this.abcNotation) || 'score';
           const path = await getAvailableVaultPath(this.app, folderPath, title, 'wav');
           await this.app.vault.createBinary(path, wavData);
-          await this.onWavSaved?.(path);
+          await this.onSoundSaved?.(path);
 
           new Notice(`WAV saved to ${path}`);
         } catch (error) {
@@ -684,6 +801,34 @@ class ABCViewerModal extends Modal {
         } finally {
           saveWavBtn.disabled = false;
           saveWavBtn.textContent = 'Save WAV';
+        }
+      };
+
+      saveMp3Btn.onclick = async () => {
+        try {
+          saveMp3Btn.disabled = true;
+          saveMp3Btn.textContent = 'Generating...';
+
+          if (!visualObj) {
+            new Notice('Error finding rendered score');
+            return;
+          }
+
+          const folderPath = getSoundOutputFolder(this.soundOutputFolder);
+          await ensureFolder(this.app, folderPath);
+
+          const mp3Data = await getMp3Data(visualObj);
+          const title = extractTitleFromAbc(this.abcNotation) || 'score';
+          const path = await getAvailableVaultPath(this.app, folderPath, title, 'mp3');
+          await this.app.vault.createBinary(path, mp3Data);
+          await this.onSoundSaved?.(path);
+
+          new Notice(`MP3 saved to ${path}`);
+        } catch (error) {
+          new Notice(`Error saving MP3: ${error}`);
+        } finally {
+          saveMp3Btn.disabled = false;
+          saveMp3Btn.textContent = 'Save MP3';
         }
       };
 
@@ -709,6 +854,18 @@ export default class MyPlugin extends Plugin {
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new ClioConvSettingTab(this.app, this));
+
+    this.addCommand({
+      id: 'select-current-music-code-block',
+      name: 'Select current music code block',
+      editorCallback: (editor) => {
+        if (selectCurrentMusicCodeBlock(editor)) {
+          new Notice('Code block selected.');
+        } else {
+          new Notice('Place the cursor inside an ABC, harptab, diatonic, or chromatic code block.');
+        }
+      }
+    });
 
     this.addCommand({
       id: 'edit-selected-segment',
@@ -985,7 +1142,7 @@ class ClioConvSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Sound output folder')
-      .setDesc('Vault folder where WAV and MIDI files are saved.')
+      .setDesc('Vault folder where MIDI, WAV, and MP3 files are saved.')
       .addText((text) => text
         .setPlaceholder(DEFAULT_SOUND_OUTPUT_FOLDER)
         .setValue(this.plugin.settings.soundOutputFolder)
@@ -996,7 +1153,7 @@ class ClioConvSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('MIDI instrument')
-      .setDesc('Instrument used when generating MIDI and WAV files.')
+      .setDesc('Instrument used when generating MIDI, WAV, and MP3 files.')
       .addDropdown((dropdown) => dropdown
         .addOptions(MIDI_INSTRUMENT_OPTIONS)
         .setValue(String(getMidiProgram(this.plugin.settings)))

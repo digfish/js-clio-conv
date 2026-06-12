@@ -12,10 +12,11 @@ Clio Conv is a plugin for harmonica players that use the tabs from harptabs.com.
 ## Commands and features
 
 - Command palette commands for text editing and notation conversion.
+- Select the contents of the current ABC, harptab, diatonic, or chromatic code block.
 - Convert selected text or current line from diatonic/chromatic tab notation.
 - Convert selected tab to ABC notation and render ABC scores.
 - Export score in ABC to SVG or PNG image
-- Generate MIDI or WAV audio files
+- Generate MIDI, WAV, or MP3 audio files
 
 ## Development
 

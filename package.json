@@ -1,6 +1,6 @@
 {
   "name": "obsidian-clio-conv",
-  "version": "0.0.1",
+  "version": "0.5.3",
   "type": "module",
   "description": "Plugin to manage harmonica tabs and text-formatted music sheets in Obsidian.",
   "main": "main.js",
@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "abcjs": "^6.1.0",
-    "html2canvas": "^1.4.1"
+    "html2canvas": "^1.4.1",
+    "lamejs": "^1.2.1"
   },
   "devDependencies": {
     "@rollup/plugin-commonjs": "^24.0.0",
