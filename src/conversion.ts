@@ -79,18 +79,123 @@ export const ABC_TO_CHROMATIC: Record<string, string> = {
   _a: '-11'
 };
 
-const tokenPattern = /(^|[\s([{;:,])([+-]?)(10|[1-9])(:[/\d]+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};:,.!?])/g;
+const tokenPattern = /(^|[\s([{;,])([+-]?)(10|[1-9])(:[/\d]+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};,.!?])/g;
 const abcNotePattern = /(\^{1,2}|_{1,2}|=)?([A-Ga-g])([,']*)(\d*\/?\d*)/g;
 
 function normalizeDuration(duration: string | undefined): string {
   return duration ? duration.slice(1) : '';
 }
 
+function isAfterColon(prefix: string, offset: number, source: string): boolean {
+  let index = offset + prefix.length - 1;
+
+  while (index >= 0 && /\s/.test(source[index])) {
+    index -= 1;
+  }
+
+  return source[index] === ':';
+}
+
+export function formatHarpTabs(input: string): string {
+  let formatted = '';
+  let index = 0;
+  let previousWasToken = false;
+
+  while (index < input.length) {
+    const tokenEnd = canStartHarpTab(input, index, previousWasToken) ? readHarpTabToken(input, index) : null;
+
+    if (tokenEnd !== null) {
+      if (previousWasToken) {
+        formatted += ' ';
+      }
+
+      formatted += input.slice(index, tokenEnd);
+      index = tokenEnd;
+      previousWasToken = true;
+      continue;
+    }
+
+    formatted += input[index];
+    previousWasToken = false;
+    index += 1;
+  }
+
+  return formatted;
+}
+
+function canStartHarpTab(input: string, index: number, previousWasToken: boolean): boolean {
+  if (previousWasToken || index === 0) {
+    return true;
+  }
+
+  return /[\s([{;,]/.test(input[index - 1]);
+}
+
+function readHarpTabToken(input: string, start: number): number | null {
+  let index = start;
+  const openingQuote = input[index] === '"' || input[index] === "'" ? input[index] : '';
+
+  if (openingQuote) {
+    index += 1;
+  }
+
+  if (input[index] === '+' || input[index] === '-') {
+    index += 1;
+  }
+
+  if (input.slice(index, index + 2).match(/^1[0-2]$/)) {
+    index += 2;
+  } else if (/^[1-9]$/.test(input[index] || '')) {
+    index += 1;
+  } else {
+    return null;
+  }
+
+  if (input[index] === ':') {
+    const durationStart = index;
+    index += 1;
+
+    while (/^[\d/]$/.test(input[index] || '')) {
+      index += 1;
+    }
+
+    if (index === durationStart + 1) {
+      index = durationStart;
+    }
+  }
+
+  if (openingQuote) {
+    if (input[index] === openingQuote) {
+      return index + 1;
+    }
+
+    return null;
+  }
+
+  if (input[index] === '<') {
+    index += 1;
+  } else if (input[index] === "'" || input[index] === '"') {
+    const bendQuote = input[index];
+    let bendLength = 0;
+
+    while (input[index] === bendQuote && bendLength < 3) {
+      index += 1;
+      bendLength += 1;
+    }
+  }
+
+  return index;
+}
+
 function convertTabToABC(input: string, mapping: Record<string, string>) {
   let converted = 0;
   let unknown = 0;
 
-  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined) => {
+  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined, offset: number, source: string) => {
+    if (isAfterColon(prefix, offset, source)) {
+      return match;
+    }
+
     const normalizedSign = sign === '-' ? '-' : '+';
     const token = `${normalizedSign}${hole}`;
     const abcNote = mapping[token];
@@ -104,7 +209,7 @@ function convertTabToABC(input: string, mapping: Record<string, string>) {
     return `${prefix}${abcNote}${normalizeDuration(duration)}`;
   });
 
-  return { text, converted, unknown };
+  return { text: formatHarpTabs(text), converted, unknown };
 }
 
 export function convertDiatonicTabToABC(input: string) {
@@ -165,5 +270,5 @@ export function convertABCToChromaticTab(input: string) {
     .filter((line) => line.trim().length > 0)
     .join('\n');
 
-  return { text, converted, unknown };
+  return { text: formatHarpTabs(text), converted, unknown };
 }

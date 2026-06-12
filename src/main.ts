@@ -4,6 +4,7 @@ import { convertDiatonicTabToABC, convertChromaticTabToABC, convertABCToChromati
 
 const HARMONICA_MIDI_PROGRAM = 22;
 const DEFAULT_SOUND_OUTPUT_FOLDER = 'harmonica/sounds';
+const PNG_EXPORT_SCALE = 12;
 
 const MIDI_INSTRUMENT_OPTIONS: Record<string, string> = {
   '0': 'Acoustic grand piano',
@@ -143,12 +144,117 @@ function invertMapping(map: Record<string, string>): Record<string, string> {
   return inverted;
 }
 
+function isAfterColon(prefix: string, offset: number, source: string): boolean {
+  let index = offset + prefix.length - 1;
+
+  while (index >= 0 && /\s/.test(source[index])) {
+    index -= 1;
+  }
+
+  return source[index] === ':';
+}
+
+function formatHarpTabs(input: string): string {
+  let formatted = '';
+  let index = 0;
+  let previousWasToken = false;
+
+  while (index < input.length) {
+    const tokenEnd = canStartHarpTab(input, index, previousWasToken) ? readHarpTabToken(input, index) : null;
+
+    if (tokenEnd !== null) {
+      if (previousWasToken) {
+        formatted += ' ';
+      }
+
+      formatted += input.slice(index, tokenEnd);
+      index = tokenEnd;
+      previousWasToken = true;
+      continue;
+    }
+
+    formatted += input[index];
+    previousWasToken = false;
+    index += 1;
+  }
+
+  return formatted;
+}
+
+function canStartHarpTab(input: string, index: number, previousWasToken: boolean): boolean {
+  if (previousWasToken || index === 0) {
+    return true;
+  }
+
+  return /[\s([{;,]/.test(input[index - 1]);
+}
+
+function readHarpTabToken(input: string, start: number): number | null {
+  let index = start;
+  const openingQuote = input[index] === '"' || input[index] === "'" ? input[index] : '';
+
+  if (openingQuote) {
+    index += 1;
+  }
+
+  if (input[index] === '+' || input[index] === '-') {
+    index += 1;
+  }
+
+  if (input.slice(index, index + 2).match(/^1[0-2]$/)) {
+    index += 2;
+  } else if (/^[1-9]$/.test(input[index] || '')) {
+    index += 1;
+  } else {
+    return null;
+  }
+
+  if (input[index] === ':') {
+    const durationStart = index;
+    index += 1;
+
+    while (/^[\d/]$/.test(input[index] || '')) {
+      index += 1;
+    }
+
+    if (index === durationStart + 1) {
+      index = durationStart;
+    }
+  }
+
+  if (openingQuote) {
+    if (input[index] === openingQuote) {
+      return index + 1;
+    }
+
+    return null;
+  }
+
+  if (input[index] === '<') {
+    index += 1;
+  } else if (input[index] === "'" || input[index] === '"') {
+    const bendQuote = input[index];
+    let bendLength = 0;
+
+    while (input[index] === bendQuote && bendLength < 3) {
+      index += 1;
+      bendLength += 1;
+    }
+  }
+
+  return index;
+}
+
 function convertDiatonicTabToChromatic(input: string): { text: string; converted: number; unknown: number } {
   let converted = 0;
   let unknown = 0;
-  const tokenPattern = /(^|[\s([{;:,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};:,.!?])/g;
+  const tokenPattern = /(^|[\s([{;,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};,.!?])/g;
 
-  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined) => {
+  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined, offset: number, source: string) => {
+    if (isAfterColon(prefix, offset, source)) {
+      return match;
+    }
+
     const normalizedSign = sign === '-' ? '-' : '+';
     const normalizedSlide = slideOrBend === '<' ? "'" : slideOrBend ? slideOrBend.replace(/"/g, "'") : '';
     const token = `${normalizedSign}${hole}${normalizedSlide}`;
@@ -163,15 +269,19 @@ function convertDiatonicTabToChromatic(input: string): { text: string; converted
     return `${prefix}${convertedToken}${duration || ''}`;
   });
 
-  return { text, converted, unknown };
+  return { text: formatHarpTabs(text), converted, unknown };
 }
 
 function convertChromaticTabToDiatonic(input: string): { text: string; converted: number; unknown: number } {
   let converted = 0;
   let unknown = 0;
-  const tokenPattern = /(^|[\s([{;:,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};:,.!?])/g;
+  const tokenPattern = /(^|[\s([{;,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};,.!?])/g;
 
-  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined) => {
+  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined, offset: number, source: string) => {
+    if (isAfterColon(prefix, offset, source)) {
+      return match;
+    }
+
     const normalizedSign = sign === '-' ? '-' : '+';
     const normalizedSlide = slideOrBend ? slideOrBend.replace(/"/g, "'") : '';
     const token = `${normalizedSign}${hole}${normalizedSlide}`;
@@ -186,7 +296,7 @@ function convertChromaticTabToDiatonic(input: string): { text: string; converted
     return `${prefix}${convertedToken}${duration || ''}`;
   });
 
-  return { text, converted, unknown };
+  return { text: formatHarpTabs(text), converted, unknown };
 }
 
 
@@ -254,6 +364,66 @@ function serializeSvg(svg: SVGElement): string {
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(clonedSvg)}`;
+}
+
+async function convertSvgToPngBlob(svg: SVGElement): Promise<Blob> {
+  const svgText = serializeSvg(svg);
+  const svgBlob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = new Image();
+    const loaded = new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error('Failed to load SVG image'));
+    });
+
+    image.src = url;
+    await loaded;
+
+    const viewBox = svg.getAttribute('viewBox')?.split(/\s+/).map(Number);
+    const width = Math.ceil(
+      image.naturalWidth ||
+      svg.viewBox.baseVal.width ||
+      (viewBox && viewBox.length === 4 ? viewBox[2] : 0) ||
+      svg.getBoundingClientRect().width
+    );
+    const height = Math.ceil(
+      image.naturalHeight ||
+      svg.viewBox.baseVal.height ||
+      (viewBox && viewBox.length === 4 ? viewBox[3] : 0) ||
+      svg.getBoundingClientRect().height
+    );
+
+    if (!width || !height) {
+      throw new Error('Could not determine SVG dimensions');
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width * PNG_EXPORT_SCALE;
+    canvas.height = height * PNG_EXPORT_SCALE;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Could not create PNG canvas');
+    }
+
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('Failed to generate PNG data'));
+        }
+      }, 'image/png');
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
@@ -422,6 +592,7 @@ class ABCViewerModal extends Modal {
       btnRow.style.marginTop = '16px';
 
       const exportSvgBtn = btnRow.createEl('button', { text: 'Download SVG' }) as HTMLButtonElement;
+      const exportPngBtn = btnRow.createEl('button', { text: 'Download PNG' }) as HTMLButtonElement;
       const saveMidiBtn = btnRow.createEl('button', { text: 'Save MIDI' }) as HTMLButtonElement;
       const saveWavBtn = btnRow.createEl('button', { text: 'Save WAV' }) as HTMLButtonElement;
       const closeBtn = btnRow.createEl('button', { text: 'Close' }) as HTMLButtonElement;
@@ -441,6 +612,29 @@ class ABCViewerModal extends Modal {
           new Notice('SVG downloaded successfully');
         } catch (error) {
           new Notice(`Error downloading SVG: ${error}`);
+        }
+      };
+
+      exportPngBtn.onclick = async () => {
+        try {
+          exportPngBtn.disabled = true;
+          exportPngBtn.textContent = 'Generating...';
+
+          const svg = container.querySelector('svg');
+          if (!svg) {
+            new Notice('Error finding SVG');
+            return;
+          }
+
+          const pngBlob = await convertSvgToPngBlob(svg);
+          const title = extractTitleFromAbc(this.abcNotation) || 'score';
+          downloadBlob(pngBlob, `${sanitizeFilename(title)}.png`);
+          new Notice('PNG downloaded successfully');
+        } catch (error) {
+          new Notice(`Error downloading PNG: ${error}`);
+        } finally {
+          exportPngBtn.disabled = false;
+          exportPngBtn.textContent = 'Download PNG';
         }
       };
 
