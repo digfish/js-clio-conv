@@ -1,6 +1,6 @@
 # Obsidian Clio Conv
 
-Example Obsidian plugin created in this workspace.
+Clio Conv is a plugin for harmonica players that use the tabs from harptabs.com. Plugin to manage harmonica tabs and text-formatted music sheets in Obsidian. It allows you to easily convert the tabs into a format that can be used in Obsidian, making it easier to organize and access your music sheets.
 
 ## How to use
 
@@ -14,6 +14,8 @@ Example Obsidian plugin created in this workspace.
 - Command palette commands for text editing and notation conversion.
 - Convert selected text or current line from diatonic/chromatic tab notation.
 - Convert selected tab to ABC notation and render ABC scores.
+- Export score in ABC to SVG or PNG image
+- Generate MIDI or WAV audio files
 
 ## Development
 

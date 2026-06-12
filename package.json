@@ -2,7 +2,7 @@
   "name": "obsidian-clio-conv",
   "version": "0.0.1",
   "type": "module",
-  "description": "Scaffold de plugin para Obsidian.",
+  "description": "Plugin to manage harmonica tabs and text-formatted music sheets in Obsidian.",
   "main": "main.js",
   "author": "",
   "license": "MIT",
