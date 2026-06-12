@@ -45,7 +45,42 @@ export const CHROMATIC_TO_ABC: Record<string, string> = {
   '-11': '^g'
 };
 
+export const ABC_TO_CHROMATIC: Record<string, string> = {
+  C: '+1',
+  '^B': '-1',
+  '^C': '+2',
+  _D: '+2',
+  D: '-2',
+  '^D': '+3',
+  _E: '+3',
+  E: '-3',
+  F: '+4',
+  '^F': '-4',
+  _G: '-4',
+  G: '+5',
+  '^G': '-5',
+  _A: '-5',
+  A: '+6',
+  '^A': '-6',
+  _B: '-6',
+  B: '+7',
+  c: '-7',
+  '^c': '+8',
+  _d: '+8',
+  d: '-8',
+  '^d': '+9',
+  _e: '+9',
+  e: '-9',
+  f: '+10',
+  '^f': '-10',
+  _g: '-10',
+  g: '+11',
+  '^g': '-11',
+  _a: '-11'
+};
+
 const tokenPattern = /(^|[\s([{;:,])([+-]?)(10|[1-9])(:[/\d]+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};:,.!?])/g;
+const abcNotePattern = /(\^{1,2}|_{1,2}|=)?([A-Ga-g])([,']*)(\d*\/?\d*)/g;
 
 function normalizeDuration(duration: string | undefined): string {
   return duration ? duration.slice(1) : '';
@@ -78,4 +113,57 @@ export function convertDiatonicTabToABC(input: string) {
 
 export function convertChromaticTabToABC(input: string) {
   return convertTabToABC(input, CHROMATIC_TO_ABC);
+}
+
+function normalizeAbcNote(accidental: string | undefined, note: string, octave: string): string {
+  let normalizedNote = note;
+
+  for (const marker of octave) {
+    if (marker === "'") {
+      normalizedNote = normalizedNote.toLowerCase();
+    } else if (marker === ',') {
+      normalizedNote = normalizedNote.toUpperCase();
+    }
+  }
+
+  const normalizedAccidental = accidental === '=' || !accidental ? '' : accidental.slice(0, 1);
+  return `${normalizedAccidental}${normalizedNote}`;
+}
+
+function normalizeAbcDuration(duration: string | undefined): string {
+  return duration ? `:${duration}` : '';
+}
+
+function isAbcHeaderLine(line: string): boolean {
+  return /^[A-Za-z]:/.test(line.trim());
+}
+
+export function convertABCToChromaticTab(input: string) {
+  let converted = 0;
+  let unknown = 0;
+
+  const text = input
+    .split(/\r?\n/)
+    .map((line) => {
+      if (isAbcHeaderLine(line) || line.trim().startsWith('%%')) {
+        return '';
+      }
+
+      return line.replace(abcNotePattern, (match, accidental: string | undefined, note: string, octave: string, duration: string | undefined) => {
+        const normalizedNote = normalizeAbcNote(accidental, note, octave || '');
+        const tab = ABC_TO_CHROMATIC[normalizedNote];
+
+        if (!tab) {
+          unknown += 1;
+          return match;
+        }
+
+        converted += 1;
+        return `${tab}${normalizeAbcDuration(duration)}`;
+      });
+    })
+    .filter((line) => line.trim().length > 0)
+    .join('\n');
+
+  return { text, converted, unknown };
 }

@@ -1,9 +1,41 @@
-import { App, Notice, Plugin, Modal, MarkdownView, normalizePath } from 'obsidian';
+import { App, Notice, Plugin, Modal, MarkdownView, PluginSettingTab, Setting, normalizePath } from 'obsidian';
 import abcjs from 'abcjs';
-import { convertDiatonicTabToABC, convertChromaticTabToABC } from './conversion';
+import { convertDiatonicTabToABC, convertChromaticTabToABC, convertABCToChromaticTab } from './conversion';
 
 const HARMONICA_MIDI_PROGRAM = 22;
-const SOUND_OUTPUT_FOLDER = 'harmonica/sounds';
+const DEFAULT_SOUND_OUTPUT_FOLDER = 'harmonica/sounds';
+
+const MIDI_INSTRUMENT_OPTIONS: Record<string, string> = {
+  '0': 'Acoustic grand piano',
+  '6': 'Harpsichord',
+  '16': 'Drawbar organ',
+  '19': 'Church organ',
+  '22': 'Harmonica',
+  '24': 'Acoustic guitar',
+  '25': 'Steel guitar',
+  '40': 'Violin',
+  '41': 'Viola',
+  '42': 'Cello',
+  '46': 'Harp',
+  '56': 'Trumpet',
+  '57': 'Trombone',
+  '65': 'Alto sax',
+  '68': 'Oboe',
+  '71': 'Clarinet',
+  '73': 'Flute',
+  '75': 'Pan flute',
+  '79': 'Ocarina'
+};
+
+interface ClioConvSettings {
+  soundOutputFolder: string;
+  midiProgram: number;
+}
+
+const DEFAULT_SETTINGS: ClioConvSettings = {
+  soundOutputFolder: DEFAULT_SOUND_OUTPUT_FOLDER,
+  midiProgram: HARMONICA_MIDI_PROGRAM
+};
 
 const DIATONIC_TO_CHROMATIC_TAB: Record<string, string> = {
   '+1': '+1',
@@ -185,19 +217,23 @@ function extractTitleFromAbc(abcNotation: string): string | null {
   return null;
 }
 
-function withDefaultMidiProgram(abcNotation: string, program: number): string {
+function withMidiProgram(abcNotation: string, program: number, replaceExisting = false): string {
   if (/^%%MIDI\s+program\b/im.test(abcNotation)) {
-    return abcNotation;
+    if (!replaceExisting) {
+      return abcNotation;
+    }
+
+    return abcNotation.replace(/^%%MIDI\s+program\b.*$/im, `%%MIDI program ${program}`);
   }
 
   return `%%MIDI program ${program}\n${abcNotation}`;
 }
 
-function buildAbcDocument(notes: string, title = 'Harmonica Score'): string {
+function buildAbcDocument(notes: string, title = 'Harmonica Score', midiProgram = HARMONICA_MIDI_PROGRAM): string {
   const normalizedNotes = notes.trim();
 
   if (/^X:\s*\d+/im.test(normalizedNotes)) {
-    return withDefaultMidiProgram(normalizedNotes, HARMONICA_MIDI_PROGRAM);
+    return withMidiProgram(normalizedNotes, midiProgram);
   }
 
   return [
@@ -206,7 +242,7 @@ function buildAbcDocument(notes: string, title = 'Harmonica Score'): string {
     'M:4/4',
     'L:1/4',
     'K:C',
-    `%%MIDI program ${HARMONICA_MIDI_PROGRAM}`,
+    `%%MIDI program ${midiProgram}`,
     normalizedNotes
   ].join('\n');
 }
@@ -233,8 +269,8 @@ function downloadBlob(blob: Blob, filename: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function getMidiData(abcNotation: string): ArrayBuffer {
-  const result = (abcjs as any).synth.getMidiFile(withDefaultMidiProgram(abcNotation, HARMONICA_MIDI_PROGRAM), {
+function getMidiData(abcNotation: string, midiProgram: number): ArrayBuffer {
+  const result = (abcjs as any).synth.getMidiFile(withMidiProgram(abcNotation, midiProgram, true), {
     midiOutputType: 'binary'
   });
   const midiData = Array.isArray(result) ? result[0] : result;
@@ -351,11 +387,15 @@ async function getAvailableVaultPath(app: App, folderPath: string, filename: str
 
 class ABCViewerModal extends Modal {
   abcNotation: string;
+  soundOutputFolder: string;
+  midiProgram: number;
   onWavSaved?: (path: string) => void | Promise<void>;
 
-  constructor(app: App, abcNotation: string, onWavSaved?: (path: string) => void | Promise<void>) {
+  constructor(app: App, abcNotation: string, soundOutputFolder: string, midiProgram: number, onWavSaved?: (path: string) => void | Promise<void>) {
     super(app);
     this.abcNotation = abcNotation;
+    this.soundOutputFolder = soundOutputFolder;
+    this.midiProgram = midiProgram;
     this.onWavSaved = onWavSaved;
   }
 
@@ -369,7 +409,7 @@ class ABCViewerModal extends Modal {
       container.style.overflowX = 'auto';
       container.style.padding = '10px';
 
-      const abcForAudio = withDefaultMidiProgram(this.abcNotation, HARMONICA_MIDI_PROGRAM);
+      const abcForAudio = withMidiProgram(this.abcNotation, this.midiProgram, true);
       const renderedTunes = abcjs.renderAbc(container, abcForAudio, {
         responsive: 'resize',
         staffwidth: 800
@@ -408,10 +448,10 @@ class ABCViewerModal extends Modal {
         try {
           saveMidiBtn.disabled = true;
           saveMidiBtn.textContent = 'Saving...';
-          const folderPath = SOUND_OUTPUT_FOLDER;
+          const folderPath = getSoundOutputFolder(this.soundOutputFolder);
           await ensureFolder(this.app, folderPath);
 
-          const midiData = getMidiData(this.abcNotation);
+          const midiData = getMidiData(this.abcNotation, this.midiProgram);
           const title = extractTitleFromAbc(this.abcNotation) || 'score';
           const path = await getAvailableVaultPath(this.app, folderPath, title, 'mid');
           await this.app.vault.createBinary(path, midiData);
@@ -435,7 +475,7 @@ class ABCViewerModal extends Modal {
             return;
           }
 
-          const folderPath = SOUND_OUTPUT_FOLDER;
+          const folderPath = getSoundOutputFolder(this.soundOutputFolder);
           await ensureFolder(this.app, folderPath);
 
           const wavData = await getWavData(visualObj);
@@ -470,8 +510,11 @@ class ABCViewerModal extends Modal {
 
 
 export default class MyPlugin extends Plugin {
+  settings!: ClioConvSettings;
 
   async onload() {
+    await this.loadSettings();
+    this.addSettingTab(new ClioConvSettingTab(this.app, this));
 
     this.addCommand({
       id: 'edit-selected-segment',
@@ -576,7 +619,7 @@ export default class MyPlugin extends Plugin {
 
         if (selection.length > 0) {
           const result = convertDiatonicTabToABC(selection);
-          editor.replaceSelection(buildAbcDocument(result.text, mdBaseName));
+          editor.replaceSelection(buildAbcDocument(result.text, mdBaseName, getMidiProgram(this.settings)));
           const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
           new Notice(`Tab converted to ABC: ${result.converted} note(s)${ignored}.`);
           return;
@@ -585,7 +628,7 @@ export default class MyPlugin extends Plugin {
         const cursor = editor.getCursor();
         const line = editor.getLine(cursor.line) || '';
         const result = convertDiatonicTabToABC(line);
-        editor.replaceRange(buildAbcDocument(result.text, mdBaseName), { line: cursor.line, ch: 0 }, { line: cursor.line, ch: line.length });
+        editor.replaceRange(buildAbcDocument(result.text, mdBaseName, getMidiProgram(this.settings)), { line: cursor.line, ch: 0 }, { line: cursor.line, ch: line.length });
         const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
         new Notice(`Line converted to ABC: ${result.converted} note(s)${ignored}.`);
       }
@@ -601,7 +644,7 @@ export default class MyPlugin extends Plugin {
 
         if (selection.length > 0) {
           const result = convertChromaticTabToABC(selection);
-          editor.replaceSelection(buildAbcDocument(result.text, mdBaseName));
+          editor.replaceSelection(buildAbcDocument(result.text, mdBaseName, getMidiProgram(this.settings)));
           const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
           new Notice(`Tab converted to ABC: ${result.converted} note(s)${ignored}.`);
           return;
@@ -610,9 +653,32 @@ export default class MyPlugin extends Plugin {
         const cursor = editor.getCursor();
         const line = editor.getLine(cursor.line) || '';
         const result = convertChromaticTabToABC(line);
-        editor.replaceRange(buildAbcDocument(result.text, mdBaseName), { line: cursor.line, ch: 0 }, { line: cursor.line, ch: line.length });
+        editor.replaceRange(buildAbcDocument(result.text, mdBaseName, getMidiProgram(this.settings)), { line: cursor.line, ch: 0 }, { line: cursor.line, ch: line.length });
         const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
         new Notice(`Line converted to ABC: ${result.converted} note(s)${ignored}.`);
+      }
+    });
+
+    this.addCommand({
+      id: 'convert-abc-to-chromatic-tab',
+      name: 'Convert ABC to chromatic tab',
+      editorCallback: (editor, view) => {
+        const selection = editor.getSelection();
+
+        if (selection.length > 0) {
+          const result = convertABCToChromaticTab(selection);
+          editor.replaceSelection(result.text);
+          const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
+          new Notice(`ABC converted to chromatic tab: ${result.converted} note(s)${ignored}.`);
+          return;
+        }
+
+        const cursor = editor.getCursor();
+        const line = editor.getLine(cursor.line) || '';
+        const result = convertABCToChromaticTab(line);
+        editor.setLine(cursor.line, result.text);
+        const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
+        new Notice(`Line converted to chromatic tab: ${result.converted} note(s)${ignored}.`);
       }
     });
 
@@ -633,7 +699,7 @@ export default class MyPlugin extends Plugin {
           return;
         }
 
-        const modal = new ABCViewerModal(this.app, abcText, (path) => {
+        const modal = new ABCViewerModal(this.app, abcText, this.settings.soundOutputFolder, getMidiProgram(this.settings), (path) => {
           const cursor = editor.getCursor();
           const line = editor.getLine(cursor.line) || '';
           editor.replaceRange(`\n![[${path}]]`, { line: cursor.line, ch: line.length });
@@ -688,6 +754,63 @@ export default class MyPlugin extends Plugin {
   }
 
   onunload() {}
+
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings.soundOutputFolder = getSoundOutputFolder(this.settings.soundOutputFolder);
+    this.settings.midiProgram = getMidiProgram(this.settings);
+  }
+
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+}
+
+function getSoundOutputFolder(folderPath: string): string {
+  return normalizePath(folderPath.trim() || DEFAULT_SOUND_OUTPUT_FOLDER);
+}
+
+function getMidiProgram(settings: ClioConvSettings): number {
+  const program = Number(settings.midiProgram);
+  return Number.isInteger(program) && MIDI_INSTRUMENT_OPTIONS[String(program)] ? program : HARMONICA_MIDI_PROGRAM;
+}
+
+class ClioConvSettingTab extends PluginSettingTab {
+  plugin: MyPlugin;
+
+  constructor(app: App, plugin: MyPlugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+
+  display(): void {
+    const { containerEl } = this;
+
+    containerEl.empty();
+    containerEl.createEl('h2', { text: 'Clio Conv settings' });
+
+    new Setting(containerEl)
+      .setName('Sound output folder')
+      .setDesc('Vault folder where WAV and MIDI files are saved.')
+      .addText((text) => text
+        .setPlaceholder(DEFAULT_SOUND_OUTPUT_FOLDER)
+        .setValue(this.plugin.settings.soundOutputFolder)
+        .onChange(async (value) => {
+          this.plugin.settings.soundOutputFolder = getSoundOutputFolder(value);
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('MIDI instrument')
+      .setDesc('Instrument used when generating MIDI and WAV files.')
+      .addDropdown((dropdown) => dropdown
+        .addOptions(MIDI_INSTRUMENT_OPTIONS)
+        .setValue(String(getMidiProgram(this.plugin.settings)))
+        .onChange(async (value) => {
+          this.plugin.settings.midiProgram = Number(value);
+          await this.plugin.saveSettings();
+        }));
+  }
 }
 
 class TextPromptModal extends Modal {
