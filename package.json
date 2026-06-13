@@ -1,6 +1,6 @@
 {
   "name": "obsidian-clio-conv",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "type": "module",
   "description": "Plugin to manage harmonica tabs and text-formatted music sheets in Obsidian.",
   "main": "main.js",
