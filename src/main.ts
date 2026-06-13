@@ -12,6 +12,7 @@ import { convertDiatonicTabToABC, convertChromaticTabToABC, convertABCToChromati
 
 const HARMONICA_MIDI_PROGRAM = 22;
 const DEFAULT_SOUND_OUTPUT_FOLDER = 'harmonica/sounds';
+const DEFAULT_SCORE_OUTPUT_FOLDER = 'scores';
 const PNG_EXPORT_SCALE = 12;
 
 const MIDI_INSTRUMENT_OPTIONS: Record<string, string> = {
@@ -38,11 +39,13 @@ const MIDI_INSTRUMENT_OPTIONS: Record<string, string> = {
 
 interface ClioConvSettings {
   soundOutputFolder: string;
+  scoreOutputFolder: string;
   midiProgram: number;
 }
 
 const DEFAULT_SETTINGS: ClioConvSettings = {
   soundOutputFolder: DEFAULT_SOUND_OUTPUT_FOLDER,
+  scoreOutputFolder: DEFAULT_SCORE_OUTPUT_FOLDER,
   midiProgram: HARMONICA_MIDI_PROGRAM
 };
 
@@ -256,17 +259,19 @@ function readHarpTabToken(input: string, start: number): number | null {
 function convertDiatonicTabToChromatic(input: string): { text: string; converted: number; unknown: number } {
   let converted = 0;
   let unknown = 0;
-  const tokenPattern = /(^|[\s([{;,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(?=$|[\s)\]};,.!?])/g;
+  const tokenPattern = /(^|[\s([{;,])([+-]?)(10|[1-9])(:\d+)?('{1,3}|"{1,3}|<)?(:\d+)?(?=$|[\s)\]};,.!?])/g;
 
-  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, duration: string | undefined, slideOrBend: string | undefined, offset: number, source: string) => {
+  const text = input.replace(tokenPattern, (match, prefix: string, sign: string, hole: string, durationBeforeBend: string | undefined, slideOrBend: string | undefined, durationAfterBend: string | undefined, offset: number, source: string) => {
     if (isAfterColon(prefix, offset, source)) {
       return match;
     }
 
+    const duration = durationBeforeBend || durationAfterBend || '';
     const normalizedSign = sign === '-' ? '-' : '+';
     const normalizedSlide = slideOrBend === '<' ? "'" : slideOrBend ? slideOrBend.replace(/"/g, "'") : '';
     const token = `${normalizedSign}${hole}${normalizedSlide}`;
-    const convertedToken = DIATONIC_TO_CHROMATIC_TAB[token];
+    const fallbackToken = `${normalizedSign}${hole}`;
+    const convertedToken = DIATONIC_TO_CHROMATIC_TAB[token] ?? (normalizedSlide ? DIATONIC_TO_CHROMATIC_TAB[fallbackToken] : undefined);
 
     if (!convertedToken) {
       unknown += 1;
@@ -274,7 +279,7 @@ function convertDiatonicTabToChromatic(input: string): { text: string; converted
     }
 
     converted += 1;
-    return `${prefix}${convertedToken}${duration || ''}`;
+    return `${prefix}${convertedToken}${duration}`;
   });
 
   return { text: formatHarpTabs(text), converted, unknown };
@@ -432,19 +437,6 @@ async function convertSvgToPngBlob(svg: SVGElement): Promise<Blob> {
   } finally {
     URL.revokeObjectURL(url);
   }
-}
-
-function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.style.display = 'none';
-
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function getMidiData(abcNotation: string, midiProgram: number): ArrayBuffer {
@@ -624,26 +616,67 @@ async function getAvailableVaultPath(app: App, folderPath: string, filename: str
 
 function selectCurrentMusicCodeBlock(editor: any): boolean {
   const cursor = editor.getCursor();
-  const opening = findOpeningMusicFence(editor, cursor.line);
+  const block = getCurrentMusicCodeBlock(editor, cursor.line);
 
-  if (!opening || cursor.line <= opening.line) {
-    return false;
-  }
-
-  const closingLine = findClosingFence(editor, opening.line + 1, opening.marker, opening.markerLength);
-
-  if (closingLine === null || cursor.line >= closingLine) {
+  if (!block) {
     return false;
   }
 
   editor.setSelection(
-    { line: opening.line + 1, ch: 0 },
-    { line: closingLine, ch: 0 }
+    { line: block.opening.line + 1, ch: 0 },
+    { line: block.closingLine, ch: 0 }
   );
   return true;
 }
 
-function findOpeningMusicFence(editor: any, fromLine: number): { line: number; marker: string; markerLength: number } | null {
+function getCurrentMusicCodeBlock(editor: any, fromLine: number): { opening: { line: number; marker: string; markerLength: number; language: string }; closingLine: number; text: string } | null {
+  const opening = findOpeningMusicFence(editor, fromLine);
+
+  if (!opening || fromLine <= opening.line) {
+    return null;
+  }
+
+  const closingLine = findClosingFence(editor, opening.line + 1, opening.marker, opening.markerLength);
+
+  if (closingLine === null || fromLine >= closingLine) {
+    return null;
+  }
+
+  const lines: string[] = [];
+
+  for (let line = opening.line; line <= closingLine; line += 1) {
+    lines.push(editor.getLine(line) || '');
+  }
+
+  return { opening, closingLine, text: lines.join('\n') };
+}
+
+function duplicateCurrentMusicCodeBlock(editor: any): boolean {
+  const cursor = editor.getCursor();
+  const block = getCurrentMusicCodeBlock(editor, cursor.line);
+
+  if (!block) {
+    return false;
+  }
+
+  const closingText = editor.getLine(block.closingLine) || '';
+  editor.replaceRange(`\n${block.text}`, { line: block.closingLine, ch: closingText.length });
+  return true;
+}
+
+async function copyCurrentMusicCodeBlock(editor: any): Promise<boolean> {
+  const cursor = editor.getCursor();
+  const block = getCurrentMusicCodeBlock(editor, cursor.line);
+
+  if (!block) {
+    return false;
+  }
+
+  await navigator.clipboard.writeText(block.text);
+  return true;
+}
+
+function findOpeningMusicFence(editor: any, fromLine: number): { line: number; marker: string; markerLength: number; language: string } | null {
   for (let line = fromLine; line >= 0; line -= 1) {
     const match = /^(\s*)(`{3,})\s*([^\s`]*)?.*$/.exec(editor.getLine(line) || '');
 
@@ -653,11 +686,35 @@ function findOpeningMusicFence(editor: any, fromLine: number): { line: number; m
 
     const language = (match[3] || '').toLowerCase();
     if (language === 'abc' || language === 'harptab' || language === 'diatonic' || language === 'chromatic') {
-      return { line, marker: match[2][0], markerLength: match[2].length };
+      return { line, marker: match[2][0], markerLength: match[2].length, language };
     }
   }
 
   return null;
+}
+
+function setCurrentMusicFenceLanguage(editor: any, fromLine: number, language: string): void {
+  const opening = findOpeningMusicFence(editor, fromLine);
+
+  if (!opening) {
+    return;
+  }
+
+  const closingLine = findClosingFence(editor, opening.line + 1, opening.marker, opening.markerLength);
+
+  if (closingLine === null || fromLine <= opening.line || fromLine >= closingLine) {
+    return;
+  }
+
+  const line = editor.getLine(opening.line) || '';
+  const marker = opening.marker.repeat(opening.markerLength);
+  const match = new RegExp(`^(\\s*${marker}\\s*)([^\\s${opening.marker}]*)?(.*)$`).exec(line);
+
+  if (!match) {
+    return;
+  }
+
+  editor.setLine(opening.line, `${match[1]}${language}${match[3] || ''}`);
 }
 
 function findClosingFence(editor: any, fromLine: number, marker: string, markerLength: number): number | null {
@@ -671,16 +728,60 @@ function findClosingFence(editor: any, fromLine: number, marker: string, markerL
   return null;
 }
 
+function isAudioReferenceLine(line: string): boolean {
+  return /^\s*!?\[\[.+\.(mid|mp3|wav)(?:\|[^\]]*)?\]\]\s*$/i.test(line);
+}
+
+function insertSoundReferenceAfterOrigin(editor: any, originLine: number, path: string): void {
+  const opening = findOpeningMusicFence(editor, originLine);
+  let insertLine = originLine;
+
+  if (opening && originLine > opening.line) {
+    const closingLine = findClosingFence(editor, opening.line + 1, opening.marker, opening.markerLength);
+
+    if (closingLine !== null && originLine < closingLine) {
+      insertLine = closingLine;
+    }
+  }
+
+  while (insertLine + 1 < editor.lineCount() && isAudioReferenceLine(editor.getLine(insertLine + 1) || '')) {
+    insertLine += 1;
+  }
+
+  const line = editor.getLine(insertLine) || '';
+  editor.replaceRange(`\n![[${path}]]`, { line: insertLine, ch: line.length });
+}
+
+function isFencedCodeBlock(text: string): boolean {
+  const trimmed = text.trim();
+  return /^`{3,}[^\n\r]*(?:\r?\n[\s\S]*)?\r?\n`{3,}$/.test(trimmed);
+}
+
+function getFencedCodeBlockContent(text: string): string | null {
+  const match = /^`{3,}[^\n\r]*\r?\n([\s\S]*?)\r?\n`{3,}$/.exec(text.trim());
+  return match ? match[1] : null;
+}
+
+function buildLabeledCodeBlock(language: string, text: string): string {
+  return `\`\`\`${language}\n${text.trim()}\n\`\`\``;
+}
+
+function formatGeneratedLabeledTab(source: string, text: string, language: string): string {
+  return isFencedCodeBlock(source) ? buildLabeledCodeBlock(language, text) : text;
+}
+
 class ABCViewerModal extends Modal {
   abcNotation: string;
   soundOutputFolder: string;
+  scoreOutputFolder: string;
   midiProgram: number;
   onSoundSaved?: (path: string) => void | Promise<void>;
 
-  constructor(app: App, abcNotation: string, soundOutputFolder: string, midiProgram: number, onSoundSaved?: (path: string) => void | Promise<void>) {
+  constructor(app: App, abcNotation: string, soundOutputFolder: string, scoreOutputFolder: string, midiProgram: number, onSoundSaved?: (path: string) => void | Promise<void>) {
     super(app);
     this.abcNotation = abcNotation;
     this.soundOutputFolder = soundOutputFolder;
+    this.scoreOutputFolder = scoreOutputFolder;
     this.midiProgram = midiProgram;
     this.onSoundSaved = onSoundSaved;
   }
@@ -707,35 +808,44 @@ class ABCViewerModal extends Modal {
       btnRow.style.gap = '8px';
       btnRow.style.marginTop = '16px';
 
-      const exportSvgBtn = btnRow.createEl('button', { text: 'Download SVG' }) as HTMLButtonElement;
-      const exportPngBtn = btnRow.createEl('button', { text: 'Download PNG' }) as HTMLButtonElement;
-      const saveMidiBtn = btnRow.createEl('button', { text: 'Save MIDI' }) as HTMLButtonElement;
-      const saveWavBtn = btnRow.createEl('button', { text: 'Save WAV' }) as HTMLButtonElement;
-      const saveMp3Btn = btnRow.createEl('button', { text: 'Save MP3' }) as HTMLButtonElement;
+      const exportSvgBtn = btnRow.createEl('button', { text: 'SVG' }) as HTMLButtonElement;
+      const savePngBtn = btnRow.createEl('button', { text: 'PNG' }) as HTMLButtonElement;
+      const saveMidiBtn = btnRow.createEl('button', { text: 'MIDI' }) as HTMLButtonElement;
+      const saveWavBtn = btnRow.createEl('button', { text: 'WAV' }) as HTMLButtonElement;
+      const saveMp3Btn = btnRow.createEl('button', { text: 'MP3' }) as HTMLButtonElement;
       const closeBtn = btnRow.createEl('button', { text: 'Close' }) as HTMLButtonElement;
 
-      exportSvgBtn.onclick = () => {
+      exportSvgBtn.onclick = async () => {
         try {
+          exportSvgBtn.disabled = true;
+          exportSvgBtn.textContent = 'Saving...';
+
           const svg = container.querySelector('svg');
           if (!svg) {
             new Notice('Error finding SVG');
             return;
           }
 
+          const folderPath = getScoreOutputFolder(this.scoreOutputFolder);
+          await ensureFolder(this.app, folderPath);
+
           const svgText = serializeSvg(svg);
-          const blob = new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' });
           const title = extractTitleFromAbc(this.abcNotation) || 'score';
-          downloadBlob(blob, `${sanitizeFilename(title)}.svg`);
-          new Notice('SVG downloaded successfully');
+          const path = await getAvailableVaultPath(this.app, folderPath, title, 'svg');
+          await this.app.vault.create(path, svgText);
+          new Notice(`SVG saved to ${path}`);
         } catch (error) {
-          new Notice(`Error downloading SVG: ${error}`);
+          new Notice(`Error saving SVG: ${error}`);
+        } finally {
+          exportSvgBtn.disabled = false;
+          exportSvgBtn.textContent = 'SVG';
         }
       };
 
-      exportPngBtn.onclick = async () => {
+      savePngBtn.onclick = async () => {
         try {
-          exportPngBtn.disabled = true;
-          exportPngBtn.textContent = 'Generating...';
+          savePngBtn.disabled = true;
+          savePngBtn.textContent = 'Saving...';
 
           const svg = container.querySelector('svg');
           if (!svg) {
@@ -743,15 +853,19 @@ class ABCViewerModal extends Modal {
             return;
           }
 
+          const folderPath = getScoreOutputFolder(this.scoreOutputFolder);
+          await ensureFolder(this.app, folderPath);
+
           const pngBlob = await convertSvgToPngBlob(svg);
           const title = extractTitleFromAbc(this.abcNotation) || 'score';
-          downloadBlob(pngBlob, `${sanitizeFilename(title)}.png`);
-          new Notice('PNG downloaded successfully');
+          const path = await getAvailableVaultPath(this.app, folderPath, title, 'png');
+          await this.app.vault.createBinary(path, await pngBlob.arrayBuffer());
+          new Notice(`PNG saved to ${path}`);
         } catch (error) {
-          new Notice(`Error downloading PNG: ${error}`);
+          new Notice(`Error saving PNG: ${error}`);
         } finally {
-          exportPngBtn.disabled = false;
-          exportPngBtn.textContent = 'Download PNG';
+          savePngBtn.disabled = false;
+          savePngBtn.textContent = 'PNG';
         }
       };
 
@@ -766,13 +880,14 @@ class ABCViewerModal extends Modal {
           const title = extractTitleFromAbc(this.abcNotation) || 'score';
           const path = await getAvailableVaultPath(this.app, folderPath, title, 'mid');
           await this.app.vault.createBinary(path, midiData);
+          await this.onSoundSaved?.(path);
 
           new Notice(`MIDI saved to ${path}`);
         } catch (error) {
           new Notice(`Error saving MIDI: ${error}`);
         } finally {
           saveMidiBtn.disabled = false;
-          saveMidiBtn.textContent = 'Save MIDI';
+          saveMidiBtn.textContent = 'MIDI';
         }
       };
 
@@ -800,7 +915,7 @@ class ABCViewerModal extends Modal {
           new Notice(`Error saving WAV: ${error}`);
         } finally {
           saveWavBtn.disabled = false;
-          saveWavBtn.textContent = 'Save WAV';
+          saveWavBtn.textContent = 'WAV';
         }
       };
 
@@ -828,7 +943,7 @@ class ABCViewerModal extends Modal {
           new Notice(`Error saving MP3: ${error}`);
         } finally {
           saveMp3Btn.disabled = false;
-          saveMp3Btn.textContent = 'Save MP3';
+          saveMp3Btn.textContent = 'MP3';
         }
       };
 
@@ -868,20 +983,30 @@ export default class MyPlugin extends Plugin {
     });
 
     this.addCommand({
-      id: 'edit-selected-segment',
-      name: 'Edit selected segment',
-      editorCallback: (editor, view) => {
-        const selection = editor.getSelection();
-        const modal = new TextPromptModal(this.app, 'Editar seleção', selection, async (value: string) => {
-          if (selection.length > 0) {
-            editor.replaceSelection(value);
+      id: 'duplicate-current-music-code-block',
+      name: 'Duplicate music code block',
+      editorCallback: (editor) => {
+        if (duplicateCurrentMusicCodeBlock(editor)) {
+          new Notice('Music code block duplicated.');
+        } else {
+          new Notice('Place the cursor inside an ABC, harptab, diatonic, or chromatic code block.');
+        }
+      }
+    });
+
+    this.addCommand({
+      id: 'copy-current-music-code-block',
+      name: 'Copy music code block',
+      editorCallback: async (editor) => {
+        try {
+          if (await copyCurrentMusicCodeBlock(editor)) {
+            new Notice('Music code block copied to clipboard.');
           } else {
-            const cursor = editor.getCursor();
-            editor.replaceRange(value, { line: cursor.line, ch: 0 }, { line: cursor.line, ch: editor.getLine(cursor.line).length });
+            new Notice('Place the cursor inside an ABC, harptab, diatonic, or chromatic code block.');
           }
-          new Notice('Segment edited.');
-        });
-        modal.open();
+        } catch (error) {
+          new Notice(`Error copying music code block: ${error}`);
+        }
       }
     });
 
@@ -921,8 +1046,12 @@ export default class MyPlugin extends Plugin {
         const selection = editor.getSelection();
 
         if (selection.length > 0) {
-          const result = convertDiatonicTabToChromatic(selection);
-          editor.replaceSelection(result.text);
+          const conversionSource = getFencedCodeBlockContent(selection) ?? selection;
+          const result = convertDiatonicTabToChromatic(conversionSource);
+          editor.replaceSelection(formatGeneratedLabeledTab(selection, result.text, 'chromatic'));
+          if (!isFencedCodeBlock(selection)) {
+            setCurrentMusicFenceLanguage(editor, editor.getCursor().line, 'chromatic');
+          }
           const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
           new Notice(`Tab converted: ${result.converted} note(s)${ignored}.`);
           return;
@@ -932,6 +1061,7 @@ export default class MyPlugin extends Plugin {
         const line = editor.getLine(cursor.line) || '';
         const result = convertDiatonicTabToChromatic(line);
         editor.setLine(cursor.line, result.text);
+        setCurrentMusicFenceLanguage(editor, cursor.line, 'chromatic');
         const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
         new Notice(`Line converted: ${result.converted} note(s)${ignored}.`);
       }
@@ -944,8 +1074,12 @@ export default class MyPlugin extends Plugin {
         const selection = editor.getSelection();
 
         if (selection.length > 0) {
-          const result = convertChromaticTabToDiatonic(selection);
-          editor.replaceSelection(result.text);
+          const conversionSource = getFencedCodeBlockContent(selection) ?? selection;
+          const result = convertChromaticTabToDiatonic(conversionSource);
+          editor.replaceSelection(formatGeneratedLabeledTab(selection, result.text, 'diatonic'));
+          if (!isFencedCodeBlock(selection)) {
+            setCurrentMusicFenceLanguage(editor, editor.getCursor().line, 'diatonic');
+          }
           const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
           new Notice(`Tab converted: ${result.converted} note(s)${ignored}.`);
           return;
@@ -955,6 +1089,7 @@ export default class MyPlugin extends Plugin {
         const line = editor.getLine(cursor.line) || '';
         const result = convertChromaticTabToDiatonic(line);
         editor.setLine(cursor.line, result.text);
+        setCurrentMusicFenceLanguage(editor, cursor.line, 'diatonic');
         const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
         new Notice(`Line converted: ${result.converted} note(s)${ignored}.`);
       }
@@ -1017,8 +1152,12 @@ export default class MyPlugin extends Plugin {
         const selection = editor.getSelection();
 
         if (selection.length > 0) {
-          const result = convertABCToChromaticTab(selection);
-          editor.replaceSelection(result.text);
+          const conversionSource = getFencedCodeBlockContent(selection) ?? selection;
+          const result = convertABCToChromaticTab(conversionSource);
+          editor.replaceSelection(formatGeneratedLabeledTab(selection, result.text, 'chromatic'));
+          if (!isFencedCodeBlock(selection)) {
+            setCurrentMusicFenceLanguage(editor, editor.getCursor().line, 'chromatic');
+          }
           const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
           new Notice(`ABC converted to chromatic tab: ${result.converted} note(s)${ignored}.`);
           return;
@@ -1028,6 +1167,7 @@ export default class MyPlugin extends Plugin {
         const line = editor.getLine(cursor.line) || '';
         const result = convertABCToChromaticTab(line);
         editor.setLine(cursor.line, result.text);
+        setCurrentMusicFenceLanguage(editor, cursor.line, 'chromatic');
         const ignored = result.unknown > 0 ? `, ${result.unknown} not recognized` : '';
         new Notice(`Line converted to chromatic tab: ${result.converted} note(s)${ignored}.`);
       }
@@ -1039,10 +1179,20 @@ export default class MyPlugin extends Plugin {
       editorCallback: (editor, view) => {
         const selection = editor.getSelection();
         let abcText = selection;
+        const originLine = editor.getCursor().line;
 
         if (!abcText || abcText.length === 0) {
-          const cursor = editor.getCursor();
-          abcText = editor.getLine(cursor.line) || '';
+          const block = getCurrentMusicCodeBlock(editor, originLine);
+
+          if (block?.opening.language === 'abc') {
+            editor.setSelection(
+              { line: block.opening.line + 1, ch: 0 },
+              { line: block.closingLine, ch: 0 }
+            );
+            abcText = getFencedCodeBlockContent(block.text) ?? block.text;
+          } else {
+            abcText = editor.getLine(originLine) || '';
+          }
         }
 
         if (!abcText.trim()) {
@@ -1050,10 +1200,8 @@ export default class MyPlugin extends Plugin {
           return;
         }
 
-        const modal = new ABCViewerModal(this.app, abcText, this.settings.soundOutputFolder, getMidiProgram(this.settings), (path) => {
-          const cursor = editor.getCursor();
-          const line = editor.getLine(cursor.line) || '';
-          editor.replaceRange(`\n![[${path}]]`, { line: cursor.line, ch: line.length });
+        const modal = new ABCViewerModal(this.app, abcText, this.settings.soundOutputFolder, this.settings.scoreOutputFolder, getMidiProgram(this.settings), (path) => {
+          insertSoundReferenceAfterOrigin(editor, originLine, path);
         });
         modal.open();
       }
@@ -1109,6 +1257,7 @@ export default class MyPlugin extends Plugin {
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.settings.soundOutputFolder = getSoundOutputFolder(this.settings.soundOutputFolder);
+    this.settings.scoreOutputFolder = getScoreOutputFolder(this.settings.scoreOutputFolder);
     this.settings.midiProgram = getMidiProgram(this.settings);
   }
 
@@ -1119,6 +1268,10 @@ export default class MyPlugin extends Plugin {
 
 function getSoundOutputFolder(folderPath: string): string {
   return normalizePath(folderPath.trim() || DEFAULT_SOUND_OUTPUT_FOLDER);
+}
+
+function getScoreOutputFolder(folderPath: string): string {
+  return normalizePath(folderPath.trim() || DEFAULT_SCORE_OUTPUT_FOLDER);
 }
 
 function getMidiProgram(settings: ClioConvSettings): number {
@@ -1152,6 +1305,17 @@ class ClioConvSettingTab extends PluginSettingTab {
         }));
 
     new Setting(containerEl)
+      .setName('Score PNG output folder')
+      .setDesc('Vault folder where generated score PNG files are saved.')
+      .addText((text) => text
+        .setPlaceholder(DEFAULT_SCORE_OUTPUT_FOLDER)
+        .setValue(this.plugin.settings.scoreOutputFolder)
+        .onChange(async (value) => {
+          this.plugin.settings.scoreOutputFolder = getScoreOutputFolder(value);
+          await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
       .setName('MIDI instrument')
       .setDesc('Instrument used when generating MIDI, WAV, and MP3 files.')
       .addDropdown((dropdown) => dropdown
@@ -1164,44 +1328,4 @@ class ClioConvSettingTab extends PluginSettingTab {
   }
 }
 
-class TextPromptModal extends Modal {
-  inputEl!: HTMLTextAreaElement;
-  titleText: string;
-  initialValue: string;
-  onSubmit: (value: string) => void;
-
-  constructor(app: App, titleText: string, initialValue: string, onSubmit: (value: string) => void) {
-    super(app);
-    this.titleText = titleText;
-    this.initialValue = initialValue;
-    this.onSubmit = onSubmit;
-  }
-
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.createEl('h3', { text: this.titleText });
-    this.inputEl = contentEl.createEl('textarea') as HTMLTextAreaElement;
-    this.inputEl.style.width = '100%';
-    this.inputEl.style.minHeight = '120px';
-    this.inputEl.value = this.initialValue || '';
-
-    const btnRow = contentEl.createDiv({ cls: 'modal-button-row' });
-const saveBtn = btnRow.createEl('button', { text: 'Save' }) as HTMLButtonElement;
-      const cancelBtn = btnRow.createEl('button', { text: 'Cancel' }) as HTMLButtonElement;
-
-    saveBtn.onclick = () => {
-      this.onSubmit(this.inputEl.value);
-      this.close();
-    };
-
-    cancelBtn.onclick = () => {
-      this.close();
-    };
-  }
-
-  onClose() {
-    const { contentEl } = this;
-    contentEl.empty();
-  }
-}
 
